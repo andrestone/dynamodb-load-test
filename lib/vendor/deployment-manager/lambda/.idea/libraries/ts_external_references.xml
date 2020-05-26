@@ -1,0 +1,18 @@
+<component name="libraryTable">
+  <library name="ts-external-references" type="javaScript">
+    <properties>
+      <sourceFilesUrls>
+        <item url="file://$PROJECT_DIR$/../../../../../../other/aws-cdk/node_modules/@types/aws-lambda/handler.d.ts" />
+        <item url="file://$PROJECT_DIR$/../../../../../../other/aws-cdk/node_modules/@types/aws-lambda/trigger/cloudformation-custom-resource.d.ts" />
+        <item url="file://$PROJECT_DIR$/../../../../../../other/aws-cdk/packages/@aws-cdk/custom-resources/lib/provider-framework/types.d.ts" />
+      </sourceFilesUrls>
+    </properties>
+    <CLASSES>
+      <root url="file://$PROJECT_DIR$/../../../../../../other/aws-cdk/node_modules/@types/aws-lambda/handler.d.ts" />
+      <root url="file://$PROJECT_DIR$/../../../../../../other/aws-cdk/node_modules/@types/aws-lambda/trigger/cloudformation-custom-resource.d.ts" />
+      <root url="file://$PROJECT_DIR$/../../../../../../other/aws-cdk/packages/@aws-cdk/custom-resources/lib/provider-framework/types.d.ts" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>
