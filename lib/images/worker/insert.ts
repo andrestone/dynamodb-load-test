@@ -5,15 +5,15 @@ const client = new ddb();
 const tableName = process.env.TABLE_NAME as string;
 const executionId = uuidv4();
 const startTime = Date.now();
-const promises = new Array<Promise<ddb.BatchWriteItemOutput>>();
 let throttledRequests = 0;
 let consumedCapacity = 0;
 const duration = parseInt(process.env.DURATION || "300"); // 5 minutes
 const load = parseInt(process.env.LOAD || "500"); // 500 items
 const interval = parseInt(process.env.INTERVAL || "1000") // 1 second
 
-function doTest() {
+function doTest():Array<Promise<ddb.BatchWriteItemOutput>> {
 
+  const promises = new Array<Promise<ddb.BatchWriteItemOutput>>();
   const items = [];
   while (items.length < load) {
     items.push({
@@ -41,6 +41,8 @@ function doTest() {
       ReturnConsumedCapacity: "TOTAL",
     }).promise());
   }
+
+  return promises
 }
 
 // Send 500 items per second for 5 minutes
@@ -51,23 +53,43 @@ async function run() {
     if (ran === duration) {
       break;
     }
-    doTest();
+    const ahora = Date.now();
+    const promises = doTest();
     ran++;
+    // Interval
     await new Promise(r => setTimeout(r, interval));
+    // Resolve promises
+    try {
+      while (promises.length > 0) {
+        const chunk = promises.splice(0, 10);
+        const rets = await Promise.all(chunk);
+        for (const ret of rets) {
+          throttledRequests += ret.UnprocessedItems?.[tableName]?.length || 0;
+          for (const c of ret?.ConsumedCapacity || []) {
+            consumedCapacity += c.CapacityUnits || 0;
+          }
+        }
+      }
+      console.log(`INSERT ${executionId}: throttledRequests so far: ${throttledRequests}\n`);
+      console.log(`INSERT ${executionId}: consumedCapacity so far: ${consumedCapacity}\n`);
+    }
+    catch (error) {
+      console.log(`INSERT ERROR on ${executionId}: failed to resolve ${promises.length} promises.\n`);
+      console.log(`Error: ${error}`);
+    }
+    const memStat = process.memoryUsage();
+    console.log(`INSERT Took ${((Date.now() - ahora) / 1000).toFixed(3)} seconds to process ${((interval) / 1000).toFixed(3)} second(s).`)
+    console.log(`INSERT ${executionId}: RSS(${memStat.rss/1024/1024}MB) HT(${memStat.heapTotal/1024/1024}MB) HU(${memStat.heapUsed/1024/1024}MB)\n`);
   }
-  const rets = await Promise.all(promises);
-
-  for (const ret of rets) {
-    throttledRequests += ret.UnprocessedItems?.[tableName]?.length || 0;
-    consumedCapacity += ret.ConsumedCapacity ? ret.ConsumedCapacity.reduce((a, c: any) => a + c.CapacityUnits, 0) : 0;
-  }
+  return true;
 }
 
 run().then(x => {
-  const ahora = Date.now();
-  console.log(`Execution ${executionId}: PutItem at ${load / (interval/1000)}/s for ${duration} seconds.\n`)
-  console.log(`Execution ${executionId}: throttledRequests: ${throttledRequests}\n`);
-  console.log(`Execution ${executionId}: consumedCapacity: ${consumedCapacity}\n`);
-  console.log(`Execution ${executionId}: finished ${ahora}. Duration: ${startTime - ahora}ms.`);
+    const ahora = Date.now();
+    console.log(`INSERT ${executionId}: PutItem at ${load / (interval/1000)}/s for ${duration} seconds.\n`)
+    console.log(`INSERT ${executionId}: throttledRequests: ${throttledRequests}\n`);
+    console.log(`INSERT ${executionId}: consumedCapacity: ${consumedCapacity}\n`);
+    console.log(`INSERT ${executionId}: finished ${ahora}. Duration: ${ahora - startTime}ms.`);
+    process.exit();
   }
 )

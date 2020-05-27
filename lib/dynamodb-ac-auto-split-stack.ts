@@ -6,7 +6,7 @@ import * as iam from '@aws-cdk/aws-iam';
 import * as sfn from '@aws-cdk/aws-stepfunctions';
 import * as sft from '@aws-cdk/aws-stepfunctions-tasks';
 import * as ec2 from '@aws-cdk/aws-ec2';
-import {DeploymentManager} from "./vendor/deployment-manager";
+import {DeploymentManager} from "cdk-execution-manager";
 
 
 export class DynamodbAcAutoSplitStack extends cdk.Stack {
@@ -17,7 +17,8 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
     const table = new ddb.Table(this, "WillItThrottle", {
       partitionKey: {name: "PK", type: ddb.AttributeType.STRING},
       sortKey: {name: "SK", type: ddb.AttributeType.STRING},
-      billingMode: ddb.BillingMode.PAY_PER_REQUEST
+      billingMode: ddb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // CW Dashboard
@@ -53,15 +54,15 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
           environment: [
             {
               name: "DURATION",
-              value: "10", // seconds
+              value: "600", // INSERT seconds
             },
             {
               name: "LOAD",
-              value: "30", // items
+              value: "500", // INSERT items
             },
             {
               name: "INTERVAL",
-              value: "1000", // milliseconds
+              value: "1000", // INSERT milliseconds
             },
           ],
           command: ["ts-node", '/opt/insert.ts'] //insert, update, read
@@ -80,15 +81,15 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
           environment: [
             {
               name: "DURATION",
-              value: "10", // seconds
+              value: "600", // READ seconds
             },
             {
               name: "LOAD",
-              value: "30", // items
+              value: "300", // READ items
             },
             {
               name: "INTERVAL",
-              value: "1000", // milliseconds
+              value: "1000", // READ milliseconds
             },
           ],
           command: ["ts-node", '/opt/read.ts'] //insert, update, read
@@ -107,15 +108,15 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
           environment: [
             {
               name: "DURATION",
-              value: "10", // seconds
+              value: "180", // UPDATE seconds
             },
             {
               name: "LOAD",
-              value: "10", // items
+              value: "300", // UPDATE items
             },
             {
               name: "INTERVAL",
-              value: "1000", // milliseconds
+              value: "700", // UPDATE interval
             },
           ],
           command: ["ts-node", '/opt/update.ts'] //insert, update, read
@@ -124,44 +125,47 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
     });
 
     // StateMachine
-    const endState = new sfn.Pass(this, "End");
+    const endState = new sfn.Pass(this, "Quit");
 
-    // 5 insert workers / 2500 inserts per second
-    const insertData = new sfn.Parallel(this, "InsertData");
-    for (let x = 0; x < 1; x++) {
+    // 3 insert workers / 1500 inserts per second
+    const insertData = new sfn.Parallel(this, "InsertData", {
+      resultPath: "DISCARD",
+    });
+    for (let x = 0; x < 5; x++) {
       insertData.branch(new sfn.Task(this, "InsertWorker " + x.toString(), {
         task: insertWorkerTask,
       }))
     }
-    // 10 read workers / 5000 inserts per second
-    const readData = new sfn.Parallel(this, "ReadData");
-    for (let x = 0; x < 3; x++) {
+    // 15 read workers / 4500 reads per second
+    const readData = new sfn.Parallel(this, "ReadData", {
+      resultPath: "DISCARD",
+    });
+    for (let x = 0; x < 15; x++) {
       readData.branch(new sfn.Task(this, "ReadWorker " + x.toString(), {
         task: readWorkerTask,
       }))
     }
-    // 15 update workers / 1500 updates per second
-    const updateData = new sfn.Parallel(this, "UpdateData");
-    for (let x = 0; x < 3; x++) {
+    // 5 update workers / 2500 updates per cycle (avg 1.8hz, over 1000 updates / second)
+    const updateData = new sfn.Parallel(this, "UpdateData", {
+      resultPath: "DISCARD",
+    });
+    for (let x = 0; x < 5; x++) {
       updateData.branch(new sfn.Task(this, "UpdateWorker " + x.toString(), {
         task: updateWorkerTask,
       }))
     }
 
     // Dry Run
-    const dryOrRun = new sfn.Choice(this, "DryRun");
-    dryOrRun.when(sfn.Condition.stringEquals('$.dryRun', "DRY"), endState)
-      .otherwise(insertData
-        .next(readData)
-        .next(updateData));
-
-    const definition = dryOrRun.afterwards();
+    const definition = insertData
+      .next(new sfn.Choice(this, "QuitAfterInsert?").when(sfn.Condition.stringEquals("$.runNext", "NO"), endState)
+        .otherwise(readData.next(new sfn.Choice(this, "QuitAfterRead?").when(sfn.Condition.stringEquals("$.runNext", "NO"), endState)
+          .otherwise(updateData))));
 
     const deployment = new DeploymentManager(this, "TestDeployment", {
       stateMachineDefinition: definition,
       executionInput: {
-        resumeTo: insertData.id,
-        dryRun: ""
+        resumeTo: endState.id,
+        runNext: "NO"
       }
     })
   }
@@ -181,6 +185,7 @@ class TestWorker extends cdk.Construct {
 
     this._taskDefinition = new ecs.FargateTaskDefinition(this, "DDBTestWorkerTask", {
       taskRole: props.taskRole,
+      memoryLimitMiB: 1024,
     })
 
     this._container = new ecs.ContainerDefinition(this._taskDefinition, "DDBTestWorkerTaskContainer", {
@@ -217,6 +222,7 @@ class DynamoDBTestCWDashboard extends cdk.Construct {
       namespace: 'AWS/DynamoDB',
       metricName: 'ReadThrottleEvents',
       period: cdk.Duration.minutes(1),
+      statistic: "sum",
       dimensions: {
         TableName: props.tableName,
       }
@@ -226,6 +232,7 @@ class DynamoDBTestCWDashboard extends cdk.Construct {
       namespace: 'AWS/DynamoDB',
       metricName: 'WriteThrottleEvents',
       period: cdk.Duration.minutes(1),
+      statistic: "sum",
       dimensions: {
         TableName: props.tableName,
       }
@@ -235,6 +242,7 @@ class DynamoDBTestCWDashboard extends cdk.Construct {
       namespace: 'AWS/DynamoDB',
       metricName: 'ConsumedReadCapacityUnits',
       period: cdk.Duration.minutes(1),
+      statistic: "sum",
       dimensions: {
         TableName: props.tableName,
       }
@@ -244,15 +252,37 @@ class DynamoDBTestCWDashboard extends cdk.Construct {
       namespace: 'AWS/DynamoDB',
       metricName: 'ConsumedWriteCapacityUnits',
       period: cdk.Duration.minutes(1),
+      statistic: "sum",
       dimensions: {
         TableName: props.tableName,
       }
     });
 
+    const consumedRCU = new cw.MathExpression({
+      expression: "r/60",
+      usingMetrics: {
+        r: consumedReadCapacityUnits,
+      },
+      label: "Consumed RCUs",
+      color: "#114477",
+      period: cdk.Duration.minutes(1),
+    });
+
+    const consumedWCU = new cw.MathExpression({
+      expression: "w/60",
+      usingMetrics: {
+        w: consumedWriteCapacityUnits,
+      },
+      label: "Consumed WCUs",
+      color: "#117744",
+      period: cdk.Duration.minutes(1),
+    });
+
     const graph = new cw.GraphWidget({
       title: "DynamoDB Test",
-      left: [consumedReadCapacityUnits, consumedWriteCapacityUnits, readThrottleEvents, writeThrottleEvents],
-      leftAnnotations: [
+      right: [consumedRCU, consumedWCU],
+      left: [readThrottleEvents, writeThrottleEvents],
+      rightAnnotations: [
         {label: "RCU Node Limit", color: "#114477", value: 3000},
         {label: "WCU Node Limit", color: "#117744", value: 1000},
       ]
