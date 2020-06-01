@@ -1,17 +1,26 @@
-import * as cdk from '@aws-cdk/core';
+# How to Load Test Your DynamoDB Table Using a CDK Serverless App
+
+
+I finally dedicated some good hours to build a CDK stack to test this. Here's a step by step:
+
+>_Disclaimer: Unless you're testing this with very light loads, deploying this App will cost you money. I'm not responsible for that._
+
+### Bootstrap a new CDK app
+1. Install CDK: `npm install -g aws-cdk`
+2. Create a new CDK app:
+```
+mkdir dynamodb-load-test && cd dynamodb-load-test
+cdk init --language typescript
+```
+
+### Adding our victim (the Table)
+This is pretty straight-forward using the L1 construct available at the official CDK construct library.
+```
+npm install @aws-cdk/aws-dynamodb
+```
+<sub>`lib/dynamodb-load-test-stack.ts`</sub>
+```typescript
 import * as ddb from '@aws-cdk/aws-dynamodb';
-import * as cw from '@aws-cdk/aws-cloudwatch';
-import * as ecs from '@aws-cdk/aws-ecs';
-import * as iam from '@aws-cdk/aws-iam';
-import * as sfn from '@aws-cdk/aws-stepfunctions';
-import * as sft from '@aws-cdk/aws-stepfunctions-tasks';
-import * as ec2 from '@aws-cdk/aws-ec2';
-import {DeploymentManager} from "cdk-execution-manager";
-
-
-export class DynamodbAcAutoSplitStack extends cdk.Stack {
-  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
-    super(scope, id, props);
 
     // Table
     const table = new ddb.Table(this, "WillItThrottle", {
@@ -20,11 +29,20 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
       billingMode: ddb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+```
 
-    // CW Dashboard
-    const dash = new DynamoDBTestCWDashboard(this, "WillItThrottleDashBoard", {
-      tableName: table.tableName,
-    });
+### Workers
+For the workers, I opted to use [Fargate](https://aws.amazon.com/fargate/), the AWS _serverless_ offer for Docker container workloads. Fargate is a perfect fit for ephemeral tasks / test workloads as we don't need to worry about provisioning servers.
+
+```bash
+npm install @aws-cdk/aws-ec2
+npm install @aws-cdk/aws-ecs
+npm install @aws-cdk/aws-iam
+```
+```typescript
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as ecs from '@aws-cdk/aws-ecs';
+import * as iam from '@aws-cdk/aws-iam';
 
     // Fargate Cluster and VPC
     const vpc = new ec2.Vpc(this, 'Vpc', {maxAzs: 1});
@@ -41,137 +59,12 @@ export class DynamodbAcAutoSplitStack extends cdk.Stack {
       tableName: table.tableName,
       taskRole,
     });
+```
 
-    // Insert Task
-    const insertWorkerTask = new sft.RunEcsFargateTask({
-      taskDefinition: testWorker.taskDefinition,
-      integrationPattern: sfn.ServiceIntegrationPattern.SYNC,
+All workers will use the same image that contains three different `ts-node` scripts, one for each task type (insert, read, update). As you might have noticed, the workers' code was isolated in a separate construct.
 
-      cluster,
-      containerOverrides: [
-        {
-          containerName: testWorker.container.containerName,
-          environment: [
-            {
-              name: "DURATION",
-              value: "600", // INSERT seconds
-            },
-            {
-              name: "LOAD",
-              value: "500", // INSERT items
-            },
-            {
-              name: "INTERVAL",
-              value: "1000", // INSERT milliseconds
-            },
-          ],
-          command: ["ts-node", '/opt/insert.ts'] //insert, update, read
-        }
-      ]
-    });
-
-    // Read Task
-    const readWorkerTask = new sft.RunEcsFargateTask({
-      taskDefinition: testWorker.taskDefinition,
-      integrationPattern: sfn.ServiceIntegrationPattern.SYNC,
-      cluster,
-      containerOverrides: [
-        {
-          containerName: testWorker.container.containerName,
-          environment: [
-            {
-              name: "DURATION",
-              value: "600", // READ seconds
-            },
-            {
-              name: "LOAD",
-              value: "300", // READ items
-            },
-            {
-              name: "INTERVAL",
-              value: "1000", // READ milliseconds
-            },
-          ],
-          command: ["ts-node", '/opt/read.ts'] //insert, update, read
-        }
-      ]
-    });
-
-    // Update Task
-    const updateWorkerTask = new sft.RunEcsFargateTask({
-      taskDefinition: testWorker.taskDefinition,
-      integrationPattern: sfn.ServiceIntegrationPattern.SYNC,
-      cluster,
-      containerOverrides: [
-        {
-          containerName: testWorker.container.containerName,
-          environment: [
-            {
-              name: "DURATION",
-              value: "180", // UPDATE seconds
-            },
-            {
-              name: "LOAD",
-              value: "300", // UPDATE items
-            },
-            {
-              name: "INTERVAL",
-              value: "700", // UPDATE interval
-            },
-          ],
-          command: ["ts-node", '/opt/update.ts'] //insert, update, read
-        }
-      ]
-    });
-
-    // StateMachine
-    const endState = new sfn.Pass(this, "Quit");
-
-    // 3 insert workers / 1500 inserts per second
-    const insertData = new sfn.Parallel(this, "InsertData", {
-      resultPath: "DISCARD",
-    });
-    for (let x = 0; x < 5; x++) {
-      insertData.branch(new sfn.Task(this, "InsertWorker " + x.toString(), {
-        task: insertWorkerTask,
-      }))
-    }
-    // 15 read workers / 4500 reads per second
-    const readData = new sfn.Parallel(this, "ReadData", {
-      resultPath: "DISCARD",
-    });
-    for (let x = 0; x < 15; x++) {
-      readData.branch(new sfn.Task(this, "ReadWorker " + x.toString(), {
-        task: readWorkerTask,
-      }))
-    }
-    // 5 update workers / 2500 updates per cycle (avg 1.8hz, over 1000 updates / second)
-    const updateData = new sfn.Parallel(this, "UpdateData", {
-      resultPath: "DISCARD",
-    });
-    for (let x = 0; x < 5; x++) {
-      updateData.branch(new sfn.Task(this, "UpdateWorker " + x.toString(), {
-        task: updateWorkerTask,
-      }))
-    }
-
-    // Dry Run
-    const definition = insertData
-      .next(new sfn.Choice(this, "QuitAfterInsert?").when(sfn.Condition.stringEquals("$.runNext", "NO"), endState)
-        .otherwise(readData.next(new sfn.Choice(this, "QuitAfterRead?").when(sfn.Condition.stringEquals("$.runNext", "NO"), endState)
-          .otherwise(updateData))));
-
-    const deployment = new DeploymentManager(this, "TestDeployment", {
-      stateMachineDefinition: definition,
-      executionInput: {
-        resumeTo: endState.id,
-        runNext: "NO"
-      }
-    })
-  }
-}
-
-interface TestWorkerProps {
+```typescript
+  interface TestWorkerProps {
   readonly taskRole: iam.IRole,
   readonly tableName: string,
 }
@@ -208,7 +101,176 @@ class TestWorker extends cdk.Construct {
     return this._container;
   }
 }
+```
 
+>_Notice how easy it is to build custom Docker images in the context of your CDK App by using the `fromAsset()` method. It builds your image and updates to it a repository, linking the reference to your deployment behind the scene._
+
+Since all the workers have the same Task Definition, we'll need to make them behave differently by passing parameters at execution time in the form of "container overrides".
+
+### Orchestration and Iteration
+In order to orchestrate the test batches, a Step Functions State Machine was used. It was built chaining Task States that will define the ultimate behaviour our workers, such as the velocity and duration of the load, as well as the type of the workload (insert, read or update).
+
+```bash
+npm install @aws-cdk/aws-stepfunctions
+npm install @aws-cdk/aws-stepfunctions-tasks
+```
+
+```typescript
+import * as sfn from '@aws-cdk/aws-stepfunctions';
+import * as sft from '@aws-cdk/aws-stepfunctions-tasks';
+
+    // Insert Task
+    const insertWorkerTask = new sft.RunEcsFargateTask({
+      taskDefinition: testWorker.taskDefinition,
+      integrationPattern: sfn.ServiceIntegrationPattern.SYNC,
+
+      cluster,
+      containerOverrides: [
+        {
+          containerName: testWorker.container.containerName,
+          environment: [
+            {
+              name: "DURATION",
+              value: "600", // INSERT duration (seconds)
+            },
+            {
+              name: "LOAD",
+              value: "500", // INSERT load (items / interval)
+            },
+            {
+              name: "INTERVAL",
+              value: "1000", // INSERT interval (milliseconds)
+            },
+          ],
+          command: ["ts-node", '/opt/insert.ts'] // type of load
+        }
+      ]
+    });
+
+    // Read Task
+    const readWorkerTask = new sft.RunEcsFargateTask({
+      taskDefinition: testWorker.taskDefinition,
+      integrationPattern: sfn.ServiceIntegrationPattern.SYNC,
+      cluster,
+      containerOverrides: [
+        {
+          containerName: testWorker.container.containerName,
+          environment: [
+           {
+             name: "DURATION",
+             value: "600", // READ duration (seconds)
+           },
+           {
+             name: "LOAD",
+             value: "500", // READ load (items / interval)
+           },
+           {
+             name: "INTERVAL",
+             value: "1000", // READ interval (milliseconds)
+           },
+         ],
+          command: ["ts-node", '/opt/read.ts'] //insert, update, read
+        }
+      ]
+    });
+
+    // Update Task
+    const updateWorkerTask = new sft.RunEcsFargateTask({
+      taskDefinition: testWorker.taskDefinition,
+      integrationPattern: sfn.ServiceIntegrationPattern.SYNC,
+      cluster,
+      containerOverrides: [
+        {
+          containerName: testWorker.container.containerName,
+          environment: [
+            {
+              name: "DURATION",
+              value: "180", // UPDATE duration (seconds)
+            },
+            {
+              name: "LOAD",
+              value: "300", // UPDATE load (items / interval)
+            },
+            {
+              name: "INTERVAL",
+              value: "700", // UPDATE interval (milliseconds)
+            },
+          ],
+          command: ["ts-node", '/opt/update.ts'] //insert, update, read
+        }
+      ]
+    });
+```
+
+To define the horizontal scale of the batches, nothing better than Step Functions Parallel state.
+
+```typescript
+    // Inserts in Parallel
+    const insertData = new sfn.Parallel(this, "InsertData", {
+      resultPath: "DISCARD",
+    });
+    for (let x = 0; x < 5; x++) {
+      insertData.branch(new sfn.Task(this, "InsertWorker " + x.toString(), {
+        task: insertWorkerTask,
+      }))
+    }
+    // Reads in Parallel
+    const readData = new sfn.Parallel(this, "ReadData", {
+      resultPath: "DISCARD",
+    });
+    for (let x = 0; x < 15; x++) {
+      readData.branch(new sfn.Task(this, "ReadWorker " + x.toString(), {
+        task: readWorkerTask,
+      }))
+    }
+    // Updates in Parallel
+    const updateData = new sfn.Parallel(this, "UpdateData", {
+      resultPath: "DISCARD",
+    });
+    for (let x = 0; x < 5; x++) {
+      updateData.branch(new sfn.Task(this, "UpdateWorker " + x.toString(), {
+        task: updateWorkerTask,
+      }))
+    }
+```
+
+
+To manage the execution iterations, [this](https://github.com/andrestone/cdk-execution-manager) CDK construct was used. It takes a State Machine and an input as props and gives us a nice iteration routine, conveniently displaying a link to the current execution details on Step Functions console. I also added a Pass state (`endState`), so it was possible to perform "dry runs" and two Choice states, so I could stop the execution after a certain state.
+
+```bash
+npm install cdk-execution-manager
+```
+```typescript
+    // State Machine
+    const definition = insertData
+      .next(new sfn.Choice(this, "QuitAfterInsert?").when(sfn.Condition.stringEquals("$.runNext", "NO"), endState)
+        .otherwise(readData.next(new sfn.Choice(this, "QuitAfterRead?").when(sfn.Condition.stringEquals("$.runNext", "NO"), endState)
+          .otherwise(updateData))));
+
+    const deployment = new DeploymentManager(this, "TestDeployment", {
+      stateMachineDefinition: definition,
+      executionInput: {
+        resumeTo: insertData.id,
+        runNext: "NO"
+      }
+    });
+```
+
+### Monitoring
+
+Besides the workflow graphical view Step Function gives, we need to actually observe how the table reacts to the thing being test. For this specific test, a CloudWatch Dashboard featuring the WCU and RCU node limits and the working throughput was configured. It also features the total number of throttled events for both reads and writes.
+
+```
+npm install @aws-cdk/aws-cloudwatch
+```
+```typescript
+
+    // CW Dashboard
+    const dash = new DynamoDBTestCWDashboard(this, "WillItThrottleDashBoard", {
+      tableName: table.tableName,
+    });
+
+...
 
 class DynamoDBTestCWDashboard extends cdk.Construct {
   constructor(scope: cdk.Construct, id: string, props: { tableName: string }) {
@@ -292,3 +354,8 @@ class DynamoDBTestCWDashboard extends cdk.Construct {
   }
 
 }
+```
+
+[dashboard image]
+
+Here is the App's source code, including the test workers.

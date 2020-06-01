@@ -2,7 +2,7 @@
   "name": "dynamodb-ac-auto-split",
   "version": "0.1.0",
   "bin": {
-    "dynamodb-ac-auto-split": "bin/dynamodb-ac-auto-split.js"
+    "dynamodb-ac-auto-split": "bin/dynamodb-load-test.js"
   },
   "scripts": {
     "build": "tsc",
@@ -25,7 +25,7 @@
     "@aws-cdk/aws-ecs": "^1.42.0",
     "@aws-cdk/aws-stepfunctions-tasks": "^1.42.0",
     "@aws-cdk/core": "^1.42.0",
-    "cdk-execution-manager": "^1.1.0",
+    "cdk-execution-manager": "^1.1.2",
     "source-map-support": "^0.5.16"
   }
 }

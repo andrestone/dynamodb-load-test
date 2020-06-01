@@ -7,19 +7,22 @@ const executionId = uuidv4();
 const startTime = Date.now();
 let consumedCapacity = 0;
 const duration = parseInt(process.env.DURATION || "300"); // 5 minutes
-const nItems = parseInt(process.env.LOAD || "100"); // 100 items
+let load = parseInt(process.env.LOAD || "100"); // 100 items
 const interval = parseInt(process.env.INTERVAL || "1000") // 1 second
+const incRate = parseFloat(process.env.INCREMENT || "0");
+const limit = parseInt(process.env.LOAD_LIMIT || "-1");
+const incTime = parseInt(process.env.INC_TIME || "60"); // 1 minute / 60 seconds
 
 
 async function pickItems(): Promise<Array<{ PK: string, SK: string }>> {
   const items = new Array<{ PK: string, SK: string }>();
-  while (items.length < nItems) {
+  while (items.length < load) {
     const leading = Math.random().toString(36).slice(2, 3);
     const ret = await client.query({
       TableName: tableName,
       ExpressionAttributeValues: {
         ":spk": {
-          S: "SinglePK"
+          S: "UltimatePK"
         },
         ":l": {
           S: leading
@@ -31,7 +34,7 @@ async function pickItems(): Promise<Array<{ PK: string, SK: string }>> {
     if (ret.Items && ret.Items.length > 0) {
       const returnedItems = ret.Items;
       for (const r of returnedItems) {
-        if (items.length >= nItems) {
+        if (items.length >= load) {
           break;
         } else {
           items.push({PK: r.PK!.S!, SK: r.SK!.S!})
@@ -39,7 +42,7 @@ async function pickItems(): Promise<Array<{ PK: string, SK: string }>> {
       }
     }
   }
-  console.log(`Execution ${executionId}: Randomly picked ${nItems}.\n`);
+  console.log(`UPDATE ${executionId} STATUS: Randomly picked ${load}.\n`);
   return items;
 }
 
@@ -71,10 +74,15 @@ async function doTest(): Promise<Array<Promise<ddb.UpdateItemOutput>>> {
 
 async function run() {
   let ran = 0;
-  console.log(`Execution ${executionId}: started ${startTime}\n`);
+  console.log(`UPDATE ${executionId} STATUS: started ${startTime}\n`);
   while (true) {
     if (ran === duration) {
       break;
+    }
+    // Increment load
+    if (ran !== 0 && ran % incTime === 0) {
+      const newLoad = Math.floor(load * (1 + incRate));
+      load = (newLoad < limit || limit < 0) ? newLoad : limit;
     }
     const ahora = Date.now();
     const promises = await doTest();
@@ -90,15 +98,15 @@ async function run() {
           consumedCapacity += ret.ConsumedCapacity?.CapacityUnits ? ret.ConsumedCapacity.CapacityUnits : 0;
         }
       }
-      console.log(`UPDATE ${executionId}: consumedCapacity so far: ${consumedCapacity}\n`);
+      console.log(`UPDATE ${executionId} STATUS: consumedCapacity so far: ${consumedCapacity}\n`);
     } catch (error) {
-      console.log(`UPDATE ERROR on ${executionId}: failed to resolve ${promises.length} promises.\n`);
-      console.log(`Error: ${error}`);
-      console.log(`UPDATE ${executionId}: consumedCapacity so far: ${consumedCapacity}\n`);
+      console.log(`UPDATE ${executionId} ERROR: failed to resolve ${promises.length} promises.\n`);
+      console.log(`UPDATE ${executionId} ERROR: ${error}`);
+      console.log(`UPDATE ${executionId} STATUS: consumedCapacity so far: ${consumedCapacity}\n`);
     }
     const memStat = process.memoryUsage();
-    console.log(`UPDATE Took ${((Date.now() - ahora) / 1000).toFixed(3)} seconds to process ${((interval) / 1000).toFixed(3)} second(s).`)
-    console.log(`UPDATE ${executionId}: RSS(${memStat.rss / 1024 / 1024}MB) HT(${memStat.heapTotal / 1024 / 1024}MB) HU(${memStat.heapUsed / 1024 / 1024}MB)\n`);
+    console.log(`UPDATE ${executionId} STATUS: Took ${((Date.now() - ahora) / 1000).toFixed(3)} seconds to process ${((interval) / 1000).toFixed(3)} second(s).`)
+    console.log(`UPDATE ${executionId} STATUS: RSS(${memStat.rss / 1024 / 1024}MB) HT(${memStat.heapTotal / 1024 / 1024}MB) HU(${memStat.heapUsed / 1024 / 1024}MB)\n`);
   }
   return true;
 }
@@ -106,9 +114,9 @@ async function run() {
 run()
   .then(x => {
       const ahora = Date.now();
-      console.log(`UPDATE ${executionId}: UpdateItem at ${nItems} items every ${interval / 1000} second(s) for ${duration} seconds.`)
-      console.log(`UPDATE ${executionId}: consumedCapacity: ${consumedCapacity}\n`);
-      console.log(`UPDATE ${executionId}: finished ${ahora}. Duration: ${ahora - startTime}ms.`);
+      console.log(`UPDATE ${executionId} STATUS: UpdateItem at ${load} items every ${interval / 1000} second(s) for ${duration} seconds.`)
+      console.log(`UPDATE ${executionId} STATUS: consumedCapacity: ${consumedCapacity}\n`);
+      console.log(`UPDATE ${executionId} STATUS: finished ${ahora}. Duration: ${ahora - startTime}ms.`);
       process.exit();
     }
   )

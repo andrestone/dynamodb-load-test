@@ -10,8 +10,12 @@ let consumedCapacity = 0;
 let throttledRequests = 0;
 let itemsRead = 0;
 const duration = parseInt(process.env.DURATION || "300"); // 5 minutes
-const load = parseInt(process.env.LOAD || "300"); // 300 reads
-const interval = parseInt(process.env.INTERVAL || "1000") // 1 second
+let load = parseInt(process.env.LOAD || "300"); // 300 reads
+const interval = parseInt(process.env.INTERVAL || "1000"); // 1 second
+const incRate = parseFloat(process.env.INCREMENT || "0");
+const limit = parseInt(process.env.LOAD_LIMIT || "-1");
+const incTime = parseInt(process.env.INC_TIME || "60"); // 1 minute / 60 seconds
+
 
 async function pickItems(): Promise<Array<{ PK: ddb.AttributeValue, SK: ddb.AttributeValue }>> {
   const items = new Array<{ PK: ddb.AttributeValue, SK: ddb.AttributeValue }>();
@@ -21,7 +25,7 @@ async function pickItems(): Promise<Array<{ PK: ddb.AttributeValue, SK: ddb.Attr
       TableName: tableName,
       ExpressionAttributeValues: {
         ":spk": {
-          S: "SinglePK"
+          S: "UltimatePK"
         },
         ":l": {
           S: leading
@@ -41,7 +45,7 @@ async function pickItems(): Promise<Array<{ PK: ddb.AttributeValue, SK: ddb.Attr
       }
     }
   }
-  console.log(`Execution ${executionId}: Randomly picked ${items.length} items.\n`)
+  console.log(`READ ${executionId} STATUS: Randomly picked ${items.length} items.\n`)
   return items;
 }
 
@@ -64,10 +68,15 @@ async function doTest(): Promise<Array<Promise<ddb.BatchGetItemOutput>>> {
 
 async function run() {
   let ran = 0;
-  console.log(`Execution ${executionId}: started ${startTime}\n`);
+  console.log(`READ ${executionId} STATUS: started ${startTime}\n`);
   while (true) {
     if (ran === duration) {
       break;
+    }
+    // Increment load
+    if (ran !== 0 && ran % incTime === 0) {
+      const newLoad = Math.floor(load * (1 + incRate));
+      load = (newLoad < limit || limit < 0) ? newLoad : limit;
     }
     const ahora = Date.now();
     const promises = await doTest();
@@ -87,19 +96,19 @@ async function run() {
           }
         }
       }
-      console.log(`READ ${executionId}: throttledRequests so far: ${throttledRequests}\n`);
-      console.log(`READ ${executionId}: consumedCapacity so far: ${consumedCapacity}\n`);
-      console.log(`READ ${executionId}: itemsRead so far: ${itemsRead}\n`);
+      console.log(`READ ${executionId} STATUS: throttledRequests so far: ${throttledRequests}\n`);
+      console.log(`READ ${executionId} STATUS: consumedCapacity so far: ${consumedCapacity}\n`);
+      console.log(`READ ${executionId} STATUS: itemsRead so far: ${itemsRead}\n`);
     } catch (error) {
-      console.log(`READ ERROR on ${executionId}: failed to resolve ${promises.length} promises.\n`);
-      console.log(`Error: ${error}`);
-      console.log(`READ ${executionId}: throttledRequests so far: ${throttledRequests}\n`);
-      console.log(`READ ${executionId}: consumedCapacity so far: ${consumedCapacity}\n`);
-      console.log(`READ ${executionId}: itemsRead so far: ${itemsRead}\n`);
+      console.log(`READ ${executionId} ERROR: failed to resolve ${promises.length} promises.\n`);
+      console.log(`READ ${executionId} ERROR: ${error}`);
+      console.log(`READ ${executionId} STATUS: throttledRequests so far: ${throttledRequests}\n`);
+      console.log(`READ ${executionId} STATUS: consumedCapacity so far: ${consumedCapacity}\n`);
+      console.log(`READ ${executionId} STATUS: itemsRead so far: ${itemsRead}\n`);
     }
     const memStat = process.memoryUsage();
-    console.log(`READ Took ${((Date.now() - ahora) / 1000).toFixed(3)} seconds to process ${((interval) / 1000).toFixed(3)} second(s).`)
-    console.log(`READ ${executionId}: RSS(${(memStat.rss / 1024 / 1024).toFixed(2)}MB) HT(${(memStat.heapTotal / 1024 / 1024).toFixed(2)}MB) HU(${(memStat.heapUsed / 1024 / 1024).toFixed(2)}MB)\n`);
+    console.log(`READ ${executionId} STATUS: Took ${((Date.now() - ahora) / 1000).toFixed(3)} seconds to process ${((interval) / 1000).toFixed(3)} second(s).`)
+    console.log(`READ ${executionId} STATUS: RSS(${(memStat.rss / 1024 / 1024).toFixed(2)}MB) HT(${(memStat.heapTotal / 1024 / 1024).toFixed(2)}MB) HU(${(memStat.heapUsed / 1024 / 1024).toFixed(2)}MB)\n`);
   }
   return true;
 }
@@ -107,11 +116,11 @@ async function run() {
 run()
   .then(x => {
       const ahora = Date.now();
-      console.log(`READ ${executionId}: Query at ${load / (interval / 1000)}/s for ${duration} seconds.\n`)
-      console.log(`READ ${executionId}: throttledRequests: ${throttledRequests}\n`);
-      console.log(`READ ${executionId}: consumedCapacity: ${consumedCapacity}\n`);
-      console.log(`READ ${executionId}: itemsRead: ${itemsRead}\n`);
-      console.log(`READ ${executionId}: finished ${ahora}. Duration: ${ahora - startTime}ms.`);
+      console.log(`READ ${executionId} STATUS: Query at ${load / (interval / 1000)}/s for ${duration} seconds.\n`)
+      console.log(`READ ${executionId} STATUS: throttledRequests: ${throttledRequests}\n`);
+      console.log(`READ ${executionId} STATUS: consumedCapacity: ${consumedCapacity}\n`);
+      console.log(`READ ${executionId} STATUS: itemsRead: ${itemsRead}\n`);
+      console.log(`READ ${executionId} STATUS: finished ${ahora}. Duration: ${ahora - startTime}ms.`);
       process.exit();
     }
   )
