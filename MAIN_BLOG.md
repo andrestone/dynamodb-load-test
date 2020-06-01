@@ -1,22 +1,7 @@
 
 >_Disclaimer: I'm not affiliated with AWS and this is not technical advice._
 
-This is a _monopost_. If you're interested in a particular topic, you can read each digest as a separate post, by clicking in the correspondent link below.   
-
-
-# Index
-[1. Motivation](#motivation-top)
-
-[2. CDK Load Testing App](#cdk-load-testing-apptop)
-
-[3. Testing](#testing-top)
-
-[4. DynamoDB Resilient Writing as an Alternative to _Write Sharding_](#speculations-top)
-
-[5. Final Thoughts](#final-thoughts-top)
-
-
-## Motivation <sub><sup>[[top]](#index)</sup></sub>
+## Motivation
 
 A couple of months ago, revisiting DynamoDB's documentation, this piece caught my attention:
 
@@ -24,9 +9,9 @@ A couple of months ago, revisiting DynamoDB's documentation, this piece caught m
 
 Immediately after that, I remembered all the thousand times I watched [Rick Houlihan's talks](https://www.youtube.com/results?search_query=Rick+Houlihan), specially the parts where he explains how to make use of _write sharding_ on your DynamoDB table designs, in order to maximize throughput by avoiding **hot partitions**.
 
-It was clear to me that this piece of documentation was about a feature that presumably addressed the same issue as _write sharding_ (hot partitions), but in an _adaptive_ way. Although the documentation doesn't tell us much, it does make a bold promise: **to automatically repartition your items across as many nodes as needed, down to a single-item partition**. It looked like a very handy feature, since hot partitions at scale are a real thing, and it's something you really need to consider before committing your table design. Also, not having to deal with _write sharding_ means not pushing it down the pipe, forcing the application layer to handle the bundled complexity. 
+It was clear to me that this piece of documentation was about a feature that presumably addressed the same issue as _write sharding_ (hot partitions), but in an _adaptive_ way. Although the documentation doesn't tell us much, it does make a bold promise: **to automatically repartition your items across as many nodes as needed, down to a single-item partition**. It looked like a very handy feature, since hot partitions are a real thing for highly scalable applications, and it's something you really need to consider before committing your table design. Also, not having to deal with _write sharding_ means not pushing it down the pipe, forcing the application layer to handle the bundled complexity. 
 
-Most importantly, **_write sharding_ strategies linearly increase your throughput capacity consumption**. Since this "auto-split" feature comes at no cost, making use of it means saving money. 
+Most importantly, **_write sharding_ strategies increase your throughput capacity consumption**. Since this "auto-split" feature comes at no cost, making use of it means saving money. 
 
 Naturally, an adaptive solution at the service layer screams for a loosely coupled, fault tolerant system (which is not necessarily the case for _write sharding_, where the splitting happens on your side, under your control). But then again, what's the matter? The problem we're trying to address concerns applications running at high scale, and these are most likely built on top of those best practices, anyway. 
 
@@ -43,7 +28,7 @@ This whole thing got me intrigued. How come this feature exists and no one talks
 
 [Kirk Kirkconnell](https://twitter.com/NoSQLKnowHow)'s answers aside, which confirmed that the feature existed and there was an upcoming documentation overhaul that would make things clearer, no one else had an actual answer. In a recent tweet, I even tried to tease [Rick Houlihan](https://twitter.com/houlihan_rick) himself, but had no luck there. 
 
-_edit: A while later, Rick attentively answered all my questions and explained the reasons why he still doesn't advise the feature discussed here as a replacement for write sharding. Thanks, Rick!_
+_edit: A while later, Rick attentively answered all my questions. Thanks, Rick!_
 
 At this point, I was already getting paranoid.
 
@@ -51,17 +36,13 @@ At this point, I was already getting paranoid.
 
 I needed to do something about it. 
 
-## CDK Load Testing App <sub><sup>[[top]](#index)</sup></sub>
+## Tests
 
-I finally dedicated some good hours to build a CDK stack to test this.
- [ some text ]
- Have a look at this blog post for more details.
-
-## Tests <sub><sup>[[top]](#index)</sup></sub>
+I finally dedicated some time to build a CDK app to test this. If you're interested, check out this [blog post](link to blogpost) for a walkthrough.
 
 ### Considerations
 
-A few things to consider before load testing a DynamoDB table with On-Demand capacity mode on:
+A few things to consider before load testing a DynamoDB table:
 - There's a default limit of 40k WCUs and 40k RCUs.
 - Tables running in On-Demand capacity mode have an initial "previous peak" value of 2k WCUs or 6k RCUs.
 - The above means that the initial throughput limit for an On-Demand table is 4k WCUs or 12k RCUs (or a linear combination of the two, eg.: 0 WCUs and 12k RCUs).
@@ -168,7 +149,7 @@ As you can see, many bad things happened here. As we could have guessed, the re-
 ![Throttled Events vs Consumed RCUs](https://dev-to-uploads.s3.amazonaws.com/i/ranoc129hv6mkt8m5z6c.png)
 <figcaption>Throttled Events vs Consumed RCUs</figcaption>
 
-It's also interesting to see that the throughput capacity randomly reaches another plateau as if the feature didn't follow a time pattern.
+It's also interesting to see that the throughput capacity randomly reaches another plateau as if the feature didn't follow a pattern over time.
 
 ### Another Test Case
 Now let's imagine an application that needs its partitions to have their throughput capacity linearly increasing over time. Based on the tests performed so far, I'll run a test that simultaneously reads and writes to a new partition at an initial velocity of 100WCUs / 300RCUs and accelerates 15% every minute.
@@ -178,32 +159,32 @@ Workers|Duration|Load|Interval|Target Throughput|Total Capacity
 5 units|1200 secs|20-277 items|1 sec|100-1385 WCU|600k WCU
 20 units|1200 secs| 15 items|1 sec|300-4230 RCU|1830k RCU
 
-![Still throttling...](dynamodb metrics throttling incremental)
+![Still throttling...](https://dev-to-uploads.s3.amazonaws.com/i/dojvl8p1wc6gy3vqfwja.png)
 <figcaption>Much better, but still some throttling.</figcaption>
 
 If we look at all the tests so far, besides the fact that the split seems to be happening randomly across the test duration, we can see that the capacity is always increased by 1k WCUs each time a new plateau is reached. This behaviour makes me think that regardless of how much throttling is happening, the feature acts by adding a single node to the partition.  
 
-Running another batch **on the same table**, now loading 6000 RCU + 2000 WCU steadily (which is actually 4 times the parition capacity, since the operations are running simultaneously), we can see that there's no throttling.
+Running another batch **on the same table and partition**, now loading 6000 RCU + 2000 WCU steadily (which is actually 4 times the parition capacity, since the operations are running simultaneously), we can see that there's no throttling.
 
 Workers|Duration|Load|Interval|Target Throughput|Total Capacity
 ---|---|---|---|---|---
 5 units|600 secs|400 items|1 sec|2000 WCU|1200k WCU
 20 units|600 secs| 300 items|1 sec|6000 RCU|3600k RCU
 
-![No throttling](no throttling cw dashboard)
+![No throttling](https://dev-to-uploads.s3.amazonaws.com/i/qh2xvnvy1sr73y86nohk.png)
 <figcaption>No throttling!</figcaption>
 
-As you can see, the repartitioning is somewhat persistent.
+It looks like the repartitioning is somewhat persistent.
 
 ### Settling down
-In the next test, we'll apply the exact same load as the previous batch, which is again 4 times the initial partition capacity. But this time, we'll do it for 30 minutes in a new partition. The idea is to validate the behavior could infer from last test. We'll do it on the same table, so the table limits don't masquerade the results.
+In the next test, we'll apply the exact same load as the previous batch, which is again 4 times the initial partition capacity. But this time, we'll do it for 30 minutes in a new partition. The idea is to validate the behavior we could infer from last test. We'll do it on the same table, so the table limits don't masquerade the results.
 
 Workers|Duration|Load|Interval|Target Throughput|Total Capacity
 ---|---|---|---|---|---
 5 units|1200 secs|400 items|1 sec|2000 WCU|1200k WCU
 20 units|1200 secs| 300 items|1 sec|6000 RCU|3600k RCU
 
-![Random plateau changes](30 min test random plateau changes over time)
+![Random plateau changes](https://dev-to-uploads.s3.amazonaws.com/i/a98v8xp5qw159ikpohf6.png)
 <figcaption>Random plateau changes</figcaption>
 
 Again, as you can see in the graph above, the time it takes for the partition to be split is pretty random, and it certainly depends on many variables we cannot control.
@@ -214,47 +195,30 @@ Workers|Duration|Load|Interval|Target Throughput|Total Capacity
 ---|---|---|---|---|---
 10 units|4800 secs|400 items|1 sec|4000 WCU|19200k WCU
 
-![Plateau changes](over one hour test escadinha plateau com throttles)
+![Plateau changes](https://dev-to-uploads.s3.amazonaws.com/i/l3m8vs24zb2ty6cg217y.png)
 <figcaption>Random intervals, 1k WCUs per change.</figcaption>
 
 
 ### Test Conclusions
-I think now we have a better idea of how the auto-split feature works and how we could make use of it. It looks like DynamoDB, in fact, has a working auto-split feature for hot partitions. It looks to me like it's a _best effort_ type of feature, since there are no guarantees on the splitting frequency and 
-
-### Architecture Suggestion <sub><sup>[[top]](#index)</sup></sub>
-(SDK throttles first)
- if throttle do (
-    (shard and write) and 
-    (send to SQS with lambda to 
-        (retry and 
-        set ttl to the sharded partition.
-        )
-    )
-)
+It looks like DynamoDB, in fact, has a working auto-split feature for hot partitions. Also, there are reasons to believe that the split works in response to a high usage of throughput capacity on a single partition, and that it always happens by adding a single node, so that the capacity is increased by 1kWCUs / 3k RCUs each time. The "split" also appears to be persistent over time.  
 
 
-### Final Thoughts <sub><sup>[[top]](#index)</sup></sub>
+## Final Thoughts
 
-The feature exists. It's there and in fact, it does the job it says it does. 
+The "auto-split" feature seems to be **a best effort to accommodate unpredicted loads that require more throughput capacity than available in the partition.** 
 
+It's important to note that the feature is very briefly described on the official docs, and there's no promise on how it actually performs. If I had to guess, I would say this is something still being worked on. My instincts say it'll be improved and launched as an "auto-sharding" feature when it's mature enough.
 
+In the meantime though, since this clearly isn't a replacement for _write sharding_ and considering the auto-split as proven to be persistent over time, is there any other way we could make use of it?    
 
-## Speculations <sub><sup>[[top]](#index)</sup></sub>
+For some applications that have to do _write sharding_ to increase the throughput capacity of their partitions, here is an architecture suggestion that might help saving money:
 
-## Final Thoughts <sub><sup>[[top]](#index)</sup></sub>
+![Lazy Sharding](https://dev-to-uploads.s3.amazonaws.com/i/er6hlhjyccboiue43fz2.png)
+<figcaption>Lazy Sharding</figcaption>
 
-It looks like DynamoDB, in fact, has a working auto-split feature for hot partitions (although it's poorly documented). By leveraging this feature, developers can solve the hot partition prevention problem by simply applying best practices for large scale / distributed systems, without needing to know partitions access velocities at design time.
+Have a look at [this blog post](link for the architecture blog post) for more details and a sample implementation. 
 
-
-
-
-Why fault-tolerant, you might ask. The answer is simple: your requests are going to throttle for a few minutes at the first time your partitions get "hot". Your fault-tolerant system have to take care of those throttled events. After that, it's auto-split heaven! I've had around 0.002% throttling rate for all batches. They ranged from 1500 to 2000 WCU/s and 4000 to 6000 RCU/s of sustained throughput in a single partition key!
-
-As you can see below, I also tested preemptively warming-up the partition, in order to support the workload.
-
-![Warming-up before the action](https://dev-to-uploads.s3.amazonaws.com/i/7r709fwkfdp2354fsnm2.png)
->### TL;DR
->Here is the bottom line: It works for reads, inserts and updates. If your system is fault-tolerant, loosely coupled, and you have to prevent hot partitions, you could leverage this feature to simplify your existent and future table designs.
+_Thanks for reading!_
 
 --
 André

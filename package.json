@@ -23,6 +23,7 @@
   "dependencies": {
     "@aws-cdk/aws-dynamodb": "^1.42.0",
     "@aws-cdk/aws-ecs": "^1.42.0",
+    "@aws-cdk/aws-lambda-event-sources": "^1.42.0",
     "@aws-cdk/aws-stepfunctions-tasks": "^1.42.0",
     "@aws-cdk/core": "^1.42.0",
     "cdk-execution-manager": "^1.1.2",

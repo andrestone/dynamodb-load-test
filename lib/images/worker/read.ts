@@ -15,6 +15,7 @@ const interval = parseInt(process.env.INTERVAL || "1000"); // 1 second
 const incRate = parseFloat(process.env.INCREMENT || "0");
 const limit = parseInt(process.env.LOAD_LIMIT || "-1");
 const incTime = parseInt(process.env.INC_TIME || "60"); // 1 minute / 60 seconds
+const PK_STRING = "SinglePK"
 
 
 async function pickItems(): Promise<Array<{ PK: ddb.AttributeValue, SK: ddb.AttributeValue }>> {
@@ -25,7 +26,7 @@ async function pickItems(): Promise<Array<{ PK: ddb.AttributeValue, SK: ddb.Attr
       TableName: tableName,
       ExpressionAttributeValues: {
         ":spk": {
-          S: "UltimatePK"
+          S: PK_STRING
         },
         ":l": {
           S: leading

@@ -1,18 +1,22 @@
 import ddb from 'aws-sdk/clients/dynamodb';
+import sqs from  'aws-sdk/clients/sqs';
 import { v4 as uuidv4 } from 'uuid';
 
-const client = new ddb();
+const ddbClient = new ddb();
+const sqsClient = new sqs();
 const tableName = process.env.TABLE_NAME as string;
 const executionId = uuidv4();
 const startTime = Date.now();
 let throttledRequests = 0;
 let consumedCapacity = 0;
+const dsQueueUrl = process.env.QUEUE_URL;
 const duration = parseInt(process.env.DURATION || "300"); // 5 minutes
 let load = parseInt(process.env.LOAD || "500"); // 500 items
 const interval = parseInt(process.env.INTERVAL || "1000") // 1 second
 const incRate = parseFloat(process.env.INCREMENT || "0")
 const limit = parseInt(process.env.LOAD_LIMIT || "-1");
 const incTime = parseInt(process.env.INC_TIME || "60"); // 1 minute / 60 seconds
+const PK_STRING = "SinglePK"
 
 
 function doTest():Array<Promise<ddb.BatchWriteItemOutput>> {
@@ -24,7 +28,7 @@ function doTest():Array<Promise<ddb.BatchWriteItemOutput>> {
       PutRequest: {
         Item: {
           PK: {
-            S: "UltimatePK",
+            S: PK_STRING,
           },
           SK: {
             S: Math.random().toString(36).slice(2,3) + "#" + uuidv4(),
@@ -40,7 +44,7 @@ function doTest():Array<Promise<ddb.BatchWriteItemOutput>> {
   console.log(`INSERT ${executionId} STATUS: Randomly inserted ${items.length} items.\n`)
 
   while (items.length > 0) {
-    promises.push(client.batchWriteItem({
+    promises.push(ddbClient.batchWriteItem({
       RequestItems: {
         [tableName]: items.splice(0, 25)
       },
@@ -48,6 +52,43 @@ function doTest():Array<Promise<ddb.BatchWriteItemOutput>> {
     }).promise());
   }
   return promises
+}
+
+
+async function writeShardAndNotify(unprocessedItems: Array<{PutRequest?: ddb.PutRequest, DeleteRequest?: ddb.DeleteRequest}>) {
+
+  if (dsQueueUrl && unprocessedItems.length > 0) {
+    console.log(`INSERT ${executionId} STATUS: notifying ${unprocessedItems.length} to dsQueue.\n`);
+
+    const shard = Math.floor(Math.random() * (20 - 1) + 1).toString();
+
+    while (unprocessedItems.length > 0) {
+      const unprocessedBatch = unprocessedItems.splice(0, 25).map(i => {
+        i.PutRequest?.Item!.PK.S = PK_STRING + "#" + shard;
+        return i;
+      });
+      const ret = await ddbClient.batchWriteItem({
+        RequestItems: {
+          [tableName]: unprocessedBatch,
+        },
+        ReturnConsumedCapacity: "TOTAL",
+      }).promise();
+      if ((ret.UnprocessedItems?.[tableName]?.length || 0) > 0) {
+        console.log(`INSERT ${executionId} STATUS: shard #${shard} FULL, trying new shard.\n`);
+        await writeShardAndNotify(ret.UnprocessedItems?.[tableName]!);
+      }
+      const toNotify = unprocessedBatch.filter(batch =>
+        (ret.UnprocessedItems?.[tableName]?.map(throttled => throttled.PutRequest).indexOf(batch.PutRequest) || -1) < 0
+      );
+      // Send All Sharded Items
+      sqsClient.sendMessage({
+        QueueUrl: dsQueueUrl,
+        MessageBody: JSON.stringify({shard, toNotify}),
+      });
+    }
+  } else if (unprocessedItems.length > 0) {
+    console.log(`INSERT ${executionId} WARNING: De-Sharding requested for ${unprocessedItems.length} items but no dsQueue.\n`);
+  }
 }
 
 // Send 500 items per second for 5 minutes
@@ -70,16 +111,21 @@ async function run() {
     await new Promise(r => setTimeout(r, interval));
     // Resolve promises
     try {
+      const unprocessedItems = [];
       while (promises.length > 0) {
         const chunk = promises.splice(0, 10);
         const rets = await Promise.all(chunk);
         for (const ret of rets) {
-          throttledRequests += ret.UnprocessedItems?.[tableName]?.length || 0;
+          if ((ret.UnprocessedItems?.[tableName]?.length || 0) > 0) {
+            throttledRequests += ret.UnprocessedItems?.[tableName]?.length || 0;
+            unprocessedItems.push(...ret.UnprocessedItems?.[tableName] || [])
+          }
           for (const c of ret?.ConsumedCapacity || []) {
             consumedCapacity += c.CapacityUnits || 0;
           }
         }
       }
+      await writeShardAndNotify(unprocessedItems);
       console.log(`INSERT ${executionId} STATUS: throttledRequests so far: ${throttledRequests}\n`);
       console.log(`INSERT ${executionId} STATUS: consumedCapacity so far: ${consumedCapacity}\n`);
     }

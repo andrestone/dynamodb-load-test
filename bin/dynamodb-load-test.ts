@@ -2,9 +2,15 @@
 import 'source-map-support/register';
 import * as cdk from '@aws-cdk/core';
 import { DynamodbLoadTest } from '../lib/dynamodb-load-test';
+import { LazyShardingStack } from '../lib/lazy-sharding-stack';
 
 const app = new cdk.App();
+
+const lazySharding = new LazyShardingStack(app, "LazyShardingStack");
+
 new DynamodbLoadTest(app, 'DynamodbLoadTestStack',  {
+  table: lazySharding.table,
+  dsQueue: lazySharding.dsQueueUrl,
   insertWorkerProps: {
     load: 200,
     iterations: 60,

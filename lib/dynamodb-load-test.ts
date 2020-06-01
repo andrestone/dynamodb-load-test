@@ -6,6 +6,7 @@ import * as iam from '@aws-cdk/aws-iam';
 import * as sfn from '@aws-cdk/aws-stepfunctions';
 import * as sft from '@aws-cdk/aws-stepfunctions-tasks';
 import * as ec2 from '@aws-cdk/aws-ec2';
+import {IQueue} from '@aws-cdk/aws-sqs';
 import {DeploymentManager} from "cdk-execution-manager";
 
 
@@ -33,8 +34,29 @@ interface DynamoDBLoadTestProps extends cdk.StackProps {
 
   /**
    * Execution input
+   *
+   * @default - {runNext: "YES", resumeTo: "InsertData"}
    */
   readonly executionInput?: executionInputProps;
+
+  /**
+   * DynamoDB table to be tested.
+   *
+   * Must have properties:
+   *
+   *   partitionKey: {name: "PK", type: ddb.AttributeType.STRING},
+   *   sortKey: {name: "SK", type: ddb.AttributeType.STRING},
+   *
+   * @default - creates a new table.
+   */
+  readonly table?: ddb.ITable;
+
+  /**
+   * De-Sharding Queue URL to be passed on to Workers
+   *
+   * @default - no de-sharding
+   */
+  readonly dsQueue?: string;
 }
 
 interface executionInputProps {
@@ -115,7 +137,7 @@ export class DynamodbLoadTest extends cdk.Stack {
     super(scope, id, props);
 
     // Table
-    const table = new ddb.Table(this, "WillItThrottle", {
+    const table = props?.table || new ddb.Table(this, "WillItThrottle", {
       partitionKey: {name: "PK", type: ddb.AttributeType.STRING},
       sortKey: {name: "SK", type: ddb.AttributeType.STRING},
       billingMode: ddb.BillingMode.PAY_PER_REQUEST,
@@ -152,6 +174,10 @@ export class DynamodbLoadTest extends cdk.Stack {
         {
           containerName: testWorker.container.containerName,
           environment: [
+            {
+              name: "QUEUE_URL",
+              value: props?.dsQueue || "",
+            },
             {
               name: "DURATION",
               value: (props?.insertWorkerProps.iterations?.toFixed(0)) || "600", // INSERT duration 
@@ -192,6 +218,10 @@ export class DynamodbLoadTest extends cdk.Stack {
           containerName: testWorker.container.containerName,
           environment: [
             {
+              name: "QUEUE_URL",
+              value: props?.dsQueue || "",
+            },
+            {
               name: "DURATION",
               value: (props?.readWorkerProps.iterations?.toFixed(0)) || "600", // READ duration
             },
@@ -230,6 +260,10 @@ export class DynamodbLoadTest extends cdk.Stack {
         {
           containerName: testWorker.container.containerName,
           environment: [
+            {
+              name: "QUEUE_URL",
+              value: props?.dsQueue || "",
+            },
             {
               name: "DURATION",
               value: (props?.updateWorkerProps.iterations?.toFixed(0)) || "600", // UPDATE duration
