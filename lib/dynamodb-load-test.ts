@@ -278,7 +278,7 @@ export class DynamodbLoadTest extends cdk.Stack {
     const readData = new sfn.Parallel(this, "ReadData", {
       resultPath: "DISCARD",
     });
-    for (let x = 0; x < (props?.insertWorkerProps.copies || 5); x++) {
+    for (let x = 0; x < (props?.readWorkerProps.copies || 5); x++) {
       readData.branch(new sfn.Wait(this, "READ " + x.toString(), {time: sfn.WaitTime.duration(cdk.Duration.seconds(x))})
         .next(
           new sfn.Task(this, "ReadWorker " + x.toString(), {
@@ -289,7 +289,7 @@ export class DynamodbLoadTest extends cdk.Stack {
     const updateData = new sfn.Parallel(this, "UpdateData", {
       resultPath: "DISCARD",
     });
-    for (let x = 0; x < (props?.insertWorkerProps.copies || 5); x++) {
+    for (let x = 0; x < (props?.updateWorkerProps.copies || 5); x++) {
       updateData.branch(new sfn.Wait(this, "UPDATE " + x.toString(), {time: sfn.WaitTime.duration(cdk.Duration.seconds(x))})
         .next(
           new sfn.Task(this, "UpdateWorker " + x.toString(), {
